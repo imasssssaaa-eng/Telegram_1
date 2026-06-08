@@ -53,6 +53,7 @@ import android.widget.Switch;
 import android.widget.TextView;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.NotificationCenter;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
@@ -94,6 +95,7 @@ public class WeryGramPremiumActivity extends BaseFragment {
         toggle.setChecked(prefs.getBoolean("wery_visual_premium", false));
         toggle.setOnCheckedChangeListener((btn, checked) -> {
             prefs.edit().putBoolean("wery_visual_premium", checked).apply();
+            NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.currentUserPremiumStatusChanged);
         });
         row.addView(labels);
         row.addView(div);
@@ -105,17 +107,60 @@ public class WeryGramPremiumActivity extends BaseFragment {
 }
 '''
 
+def patch_user_config(errors):
+    uc = find_file("UserConfig.java")
+    if not uc:
+        print("✘ UserConfig.java not found", file=sys.stderr)
+        return errors + 1
+
+    text = read(uc)
+    if 'wery_visual_premium' in text:
+        print("↩ skip UserConfig"); return errors
+
+    # Находим getCurrentUser() и первый return currentUser; после него
+    sig_pos = text.find("getCurrentUser()")
+    if sig_pos == -1:
+        print("✘ UserConfig: getCurrentUser() не найден", file=sys.stderr)
+        return errors + 1
+
+    ret_pos = text.find("return currentUser;", sig_pos)
+    if ret_pos == -1:
+        print("✘ UserConfig: return currentUser; не найден", file=sys.stderr)
+        return errors + 1
+
+    # Определяем отступ
+    line_start = text.rfind('\n', 0, ret_pos) + 1
+    indent = ''
+    for ch in text[line_start:ret_pos]:
+        if ch in (' ', '\t'): indent += ch
+        else: break
+
+    patch = (
+        f'{indent}if (currentUser != null) {{\n'
+        f'{indent}    android.content.SharedPreferences __p = org.telegram.messenger.MessagesController.getGlobalMainSettings();\n'
+        f'{indent}    if (!__p.contains("wery_orig_prem")) __p.edit().putBoolean("wery_orig_prem", currentUser.premium).apply();\n'
+        f'{indent}    currentUser.premium = __p.getBoolean("wery_orig_prem", false) || __p.getBoolean("wery_visual_premium", false);\n'
+        f'{indent}}}\n'
+        f'{indent}'
+    )
+
+    new_text = text[:ret_pos] + patch + text[ret_pos:]
+    write(uc, new_text)
+    return errors
+
 def main():
     print("▶ WeryGram patcher\n")
     errors = 0
 
+    # UserConfig — визуальный премиум
+    errors = patch_user_config(errors)
+
+    # SettingsActivity
     sa = find_file("SettingsActivity.java")
     if not sa: print("✘ SettingsActivity.java not found", file=sys.stderr); sys.exit(1)
 
-    # import
     if not insert_before(sa, "import org.telegram.ui.Components.", "import org.telegram.ui.WeryGramPremiumActivity;"): errors += 1
 
-    # fillItems — добавляем кнопку В КОНЕЦ метода
     fill_anchors = [
         "void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {",
         "public void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {",
@@ -133,11 +178,10 @@ def main():
                 text[method_end:])
             write(sa, new_text)
         else:
-            print(f"↩ skip fillItems")
+            print("↩ skip fillItems")
     else:
         print("✘ fillItems не найден", file=sys.stderr); errors += 1
 
-    # onClick
     click_anchors = [
         "void onItemClick(UItem item, View view, int position, float x, float y) {",
         "public void onItemClick(UItem item, View view, int position, float x, float y) {",
@@ -148,11 +192,14 @@ def main():
         "void onClick(UItem item) {",
         "public void onClick(UItem item) {",
     ]
-    if not insert_after(sa, next((a for a in click_anchors if a in read(sa)), ""),
-        '        if (item.id == 1000) { presentFragment(new WeryGramPremiumActivity()); return; }'):
-        errors += 1
+    click_anchor = next((a for a in click_anchors if a in read(sa)), None)
+    if click_anchor:
+        if not insert_after(sa, click_anchor,
+            '        if (item.id == 1000) { presentFragment(new WeryGramPremiumActivity()); return; }'):
+            errors += 1
+    else:
+        print("✘ onClick не найден", file=sys.stderr); errors += 1
 
-    # WeryGramPremiumActivity
     dest = os.path.join(os.path.dirname(sa), "WeryGramPremiumActivity.java")
     if os.path.exists(dest): os.remove(dest)
     with open(dest, "w", encoding="utf-8") as f: f.write(ACTIVITY)
