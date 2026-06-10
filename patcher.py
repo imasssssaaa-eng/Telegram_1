@@ -6,7 +6,8 @@ SRC = os.path.join(ROOT, "TMessagesProj", "src", "main", "java")
 
 def find_file(name):
     for dp, _, files in os.walk(SRC):
-        if name in files: return os.path.join(dp, name)
+        if name in files:
+            return os.path.join(dp, name)
     return None
 
 def read(p):
@@ -18,27 +19,195 @@ def write(p, t):
 
 def find_method_end(text, open_brace):
     depth = 0
-    for i in range(open_brace, len(text)):
+    i = open_brace
+    while i < len(text):
         if text[i] == '{': depth += 1
         elif text[i] == '}':
             depth -= 1
             if depth == 0: return i
+        i += 1
     return len(text) - 1
 
 def insert_before(path, marker, insertion):
     text = read(path)
-    if insertion.strip() in text: return True
-    if marker not in text: return False
+    if insertion.strip() in text:
+        print(f"↩ skip {os.path.relpath(path, ROOT)}"); return True
+    if marker not in text:
+        print(f"✘ NOT FOUND: {marker!r}", file=sys.stderr); return False
     write(path, text.replace(marker, insertion + "\n" + marker, 1)); return True
 
 def insert_after(path, marker, insertion):
     text = read(path)
-    if insertion.strip() in text: return True
-    if marker not in text: return False
+    if insertion.strip() in text:
+        print(f"↩ skip {os.path.relpath(path, ROOT)}"); return True
+    if marker not in text:
+        print(f"✘ NOT FOUND: {marker!r}", file=sys.stderr); return False
     write(path, text.replace(marker, marker + "\n" + insertion, 1)); return True
 
+# ── WeryGramGifts.java ────────────────────────────────────────────────────────
+GIFTS_JAVA = '''\
+package org.telegram.ui;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.MessagesController;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.HashSet;
+
+public class WeryGramGifts {
+
+    private static final String GIFTS_URL =
+        "https://raw.githubusercontent.com/binbash-0/DeletedGifts-Plugin/refs/heads/main/gift_list.json";
+
+    private static volatile boolean injected = false;
+
+    private static Object getF(Object obj, String name) {
+        if (obj == null) return null;
+        try { return obj.getClass().getField(name).get(obj); }
+        catch (Exception e) {
+            try {
+                Field f = obj.getClass().getDeclaredField(name);
+                f.setAccessible(true);
+                return f.get(obj);
+            } catch (Exception ex) { return null; }
+        }
+    }
+
+    private static void setF(Object obj, String name, Object val) {
+        if (obj == null) return;
+        try { obj.getClass().getField(name).set(obj, val); }
+        catch (Exception e) {
+            try {
+                Field f = obj.getClass().getDeclaredField(name);
+                f.setAccessible(true);
+                f.set(obj, val);
+            } catch (Exception ex) {}
+        }
+    }
+
+    public static void reset() { injected = false; }
+
+    public static void injectDeletedGifts(int account) {
+        if (!MessagesController.getGlobalMainSettings()
+                .getBoolean("wery_deleted_gifts", false)) return;
+        new Thread(() -> {
+            try {
+                HttpURLConnection conn =
+                    (HttpURLConnection) new URL(GIFTS_URL).openConnection();
+                conn.setConnectTimeout(5000);
+                conn.setReadTimeout(5000);
+                BufferedReader br =
+                    new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = br.readLine()) != null) sb.append(line);
+                br.close();
+                conn.disconnect();
+
+                JSONArray arr = new JSONObject(sb.toString()).getJSONArray("gifts");
+                final long[] ids    = new long[arr.length()];
+                final int[]  prices = new int[arr.length()];
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject g = arr.getJSONObject(i);
+                    ids[i]    = g.getLong("id");
+                    prices[i] = g.getInt("price");
+                }
+                AndroidUtilities.runOnUIThread(() -> doInject(account, ids, prices));
+            } catch (Exception ignored) {}
+        }).start();
+    }
+
+    @SuppressWarnings({"unchecked","rawtypes"})
+    private static void doInject(int account, long[] ids, int[] prices) {
+        if (injected) return;
+        try {
+            Class<?> scClass = Class.forName("org.telegram.ui.Stars.StarsController");
+            Object controller =
+                scClass.getMethod("getInstance", int.class).invoke(null, account);
+
+            // Ищем список подарков по нескольким возможным именам полей
+            ArrayList gifts = null;
+            for (String fn : new String[]{"gifts", "starGifts", "allGifts"}) {
+                try {
+                    Field f = scClass.getDeclaredField(fn);
+                    f.setAccessible(true);
+                    Object v = f.get(controller);
+                    if (v instanceof ArrayList && !((ArrayList) v).isEmpty()) {
+                        gifts = (ArrayList) v;
+                        break;
+                    }
+                } catch (Exception ignored) {}
+            }
+            if (gifts == null || gifts.isEmpty()) return;
+
+            Object donor = gifts.get(0);
+
+            // Собираем уже существующие ID
+            HashSet<Long> existing = new HashSet<>();
+            for (Object o : new ArrayList(gifts)) {
+                Object cid = getF(o, "id");
+                if (cid instanceof Long)   existing.add((Long) cid);
+                else if (cid instanceof Number) existing.add(((Number) cid).longValue());
+            }
+
+            int insertPos = Math.min(11, gifts.size());
+            int count = 0;
+
+            for (int i = 0; i < ids.length; i++) {
+                if (existing.contains(ids[i])) continue;
+                try {
+                    Object clone = donor.getClass()
+                        .getDeclaredConstructor().newInstance();
+                    // Копируем базовые поля из донора
+                    for (String f : new String[]{"flags","sticker","convert_stars"}) {
+                        Object v = getF(donor, f);
+                        if (v != null) setF(clone, f, v);
+                    }
+                    // Устанавливаем наши поля
+                    setF(clone, "id",         ids[i]);
+                    setF(clone, "gift_id",    ids[i]);
+                    setF(clone, "stars",      prices[i]);
+                    setF(clone, "sold_out",   false);
+                    setF(clone, "attributes", new ArrayList<>());
+
+                    gifts.add(Math.min(insertPos + count, gifts.size()), clone);
+                    count++;
+                } catch (Exception ignored) {}
+            }
+
+            // Обновляем sortedGifts / birthdaySortedGifts
+            for (String sf : new String[]{"sortedGifts","birthdaySortedGifts"}) {
+                try {
+                    Field f = scClass.getDeclaredField(sf);
+                    f.setAccessible(true);
+                    ArrayList sorted = (ArrayList) f.get(controller);
+                    if (sorted != null && sorted != gifts) {
+                        for (int i = 0; i < count; i++) {
+                            sorted.add(Math.min(insertPos + i, sorted.size()),
+                                       gifts.get(insertPos + i));
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            injected = true;
+        } catch (Exception ignored) {}
+    }
+}
+'''
+
+# ── WeryGramPremiumActivity.java ──────────────────────────────────────────────
 ACTIVITY = '''\
 package org.telegram.ui;
+
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.widget.LinearLayout;
@@ -52,70 +221,66 @@ import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
 
 public class WeryGramPremiumActivity extends BaseFragment {
+
     private SharedPreferences prefs;
-    
-    private void addRow(Context ctx, LinearLayout parent, String title, String sub, String key) {
+    private int account;
+
+    interface OnEnable { void run(); }
+
+    private void addRow(Context ctx, LinearLayout parent,
+                        String title, String sub, String key, OnEnable onEnable) {
         LinearLayout row = new LinearLayout(ctx);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(14), AndroidUtilities.dp(16), AndroidUtilities.dp(14));
+        row.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(14),
+                       AndroidUtilities.dp(16), AndroidUtilities.dp(14));
         row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        
+
         LinearLayout labels = new LinearLayout(ctx);
         labels.setOrientation(LinearLayout.VERTICAL);
-        labels.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        
+        labels.setLayoutParams(new LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
         TextView t = new TextView(ctx);
         t.setText(title);
         t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16);
         t.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
-        
+
         TextView s = new TextView(ctx);
         s.setText(sub);
         s.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13);
         s.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2));
-        
+
         labels.addView(t);
         labels.addView(s);
-        
+
         android.view.View div = new android.view.View(ctx);
         div.setBackgroundColor(Theme.getColor(Theme.key_divider));
-        LinearLayout.LayoutParams dp2 = new LinearLayout.LayoutParams(AndroidUtilities.dp(1), AndroidUtilities.dp(40));
+        LinearLayout.LayoutParams dp2 = new LinearLayout.LayoutParams(
+            AndroidUtilities.dp(1), AndroidUtilities.dp(40));
         dp2.setMargins(AndroidUtilities.dp(12), 0, AndroidUtilities.dp(12), 0);
         div.setLayoutParams(dp2);
-        
+
         Switch toggle = new Switch(ctx);
         toggle.setChecked(prefs.getBoolean(key, false));
         toggle.setOnCheckedChangeListener((btn, checked) -> {
             prefs.edit().putBoolean(key, checked).apply();
-            NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.currentUserPremiumStatusChanged);
-            if ("wery_deleted_gifts".equals(key)) {
-                try {
-                    Object mc = MessagesController.getInstance(currentAccount);
-                    for (java.lang.reflect.Field f : mc.getClass().getDeclaredFields()) {
-                        if (f.getName().toLowerCase().contains("gift") && java.util.List.class.isAssignableFrom(f.getType())) {
-                            f.setAccessible(true); ((java.util.List) f.get(mc)).clear();
-                        }
-                    }
-                } catch (Exception e) {}
-                try {
-                    Object gc = Class.forName("org.telegram.messenger.GiftsController").getMethod("getInstance", int.class).invoke(null, currentAccount);
-                    for (java.lang.reflect.Field f : gc.getClass().getDeclaredFields()) {
-                        if (f.getName().toLowerCase().contains("gift") && java.util.List.class.isAssignableFrom(f.getType())) {
-                            f.setAccessible(true); ((java.util.List) f.get(gc)).clear();
-                        }
-                    }
-                } catch (Exception e) {}
-                NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.starGiftsLoaded);
-            }
+            NotificationCenter.getGlobalInstance()
+                .postNotificationName(NotificationCenter.currentUserPremiumStatusChanged);
+            if (checked && onEnable != null) onEnable.run();
         });
-        
-        row.addView(labels); row.addView(div); row.addView(toggle); parent.addView(row);
+
+        row.addView(labels);
+        row.addView(div);
+        row.addView(toggle);
+        parent.addView(row);
+
         android.view.View divider = new android.view.View(ctx);
         divider.setBackgroundColor(Theme.getColor(Theme.key_divider));
-        divider.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1));
+        divider.setLayoutParams(new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 1));
         parent.addView(divider);
     }
-    
+
     @Override
     public android.view.View createView(Context context) {
         actionBar.setBackButtonImage(org.telegram.messenger.R.drawable.ic_ab_back);
@@ -123,35 +288,56 @@ public class WeryGramPremiumActivity extends BaseFragment {
         actionBar.setActionBarMenuOnItemClick(new ActionBar.ActionBarMenuOnItemClick() {
             @Override public void onItemClick(int id) { if (id == -1) finishFragment(); }
         });
-        
-        prefs = MessagesController.getGlobalMainSettings();
+
+        prefs   = MessagesController.getGlobalMainSettings();
+        account = currentAccount;
+
         LinearLayout root = new LinearLayout(context);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
-        
-        addRow(context, root, "Visual Premium", "\\u0414\\u0430\\u0451\\u0442 \\u0432\\u0438\\u0437\\u0443\\u0430\\u043b\\u044c\\u043d\\u043e Telegram Premium", "wery_visual_premium");
-        addRow(context, root, "\\u0420\\u0435\\u0436\\u0438\\u043c \\u041f\\u0440\\u0438\\u0437\\u0440\\u0430\\u043a\\u0430", "\\u0412\\u044b \\u0431\\u0443\\u0434\\u0435\\u0442\\u0435 \\u0432 \\u0441\\u0442\\u0430\\u0442\\u0443\\u0441\\u0435 \\u043d\\u0435\\u0432\\u0438\\u0434\\u0438\\u043c\\u043a\\u0438, \\u0430 \\u0442\\u0430\\u043a\\u0436\\u0435 \\u043f\\u0440\\u0438 \\u043f\\u0440\\u043e\\u0447\\u0442\\u0435\\u043d\\u0438\\u0438 \\u0441\\u043e\\u043e\\u0431\\u0449\\u0435\\u043d\\u0438\\u044f \\u043f\\u0440\\u043e\\u0441\\u043c\\u043e\\u0442\\u0440 \\u043d\\u0435 \\u0431\\u0443\\u0434\\u0435\\u0442 \\u0437\\u0430\\u0441\\u0447\\u0438\\u0442\\u044b\\u0432\\u0430\\u0442\\u044c\\u0441\\u044f", "wery_ghost_mode");
-        addRow(context, root, "\\u0423\\u0434\\u0430\\u043b\\u0451\\u043d\\u043d\\u044b\\u0435 \\u043f\\u043e\\u0434\\u0430\\u0440\\u043a\\u0438", "\\u0412\\u044b \\u043c\\u043e\\u0436\\u0435\\u0442\\u0435 \\u0434\\u0430\\u0440\\u0438\\u0442\\u044c \\u0443\\u0434\\u0430\\u043b\\u0451\\u043d\\u043d\\u044b\\u0435 \\u0438 \\u0438\\u043c\\u0435\\u043d\\u043d\\u044b\\u0435 \\u043f\\u043e\\u0434\\u0430\\u0440\\u043a\\u0438", "wery_deleted_gifts");
-            
+
+        addRow(context, root,
+            "Visual Premium",
+            "\u0414\u0430\u0451\u0442 \u0432\u0438\u0437\u0443\u0430\u043b\u044c\u043d\u043e Telegram Premium",
+            "wery_visual_premium", null);
+
+        addRow(context, root,
+            "\u0420\u0435\u0436\u0438\u043c \u041f\u0440\u0438\u0437\u0440\u0430\u043a\u0430",
+            "\u0412\u044b \u0431\u0443\u0434\u0435\u0442\u0435 \u0432 \u0441\u0442\u0430\u0442\u0443\u0441\u0435 \u043d\u0435\u0432\u0438\u0434\u0438\u043c\u043a\u0438, \u0430 \u0442\u0430\u043a\u0436\u0435 \u043f\u0440\u0438 \u043f\u0440\u043e\u0447\u0442\u0435\u043d\u0438\u0438 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440 \u043d\u0435 \u0431\u0443\u0434\u0435\u0442 \u0437\u0430\u0441\u0447\u0438\u0442\u044b\u0432\u0430\u0442\u044c\u0441\u044f",
+            "wery_ghost_mode", null);
+
+        addRow(context, root,
+            "\u0423\u0434\u0430\u043b\u0451\u043d\u043d\u044b\u0435 \u043f\u043e\u0434\u0430\u0440\u043a\u0438",
+            "\u0412\u044b \u043c\u043e\u0436\u0435\u0442\u0435 \u0434\u0430\u0440\u0438\u0442\u044c \u0443\u0434\u0430\u043b\u0451\u043d\u043d\u044b\u0435 \u043f\u043e\u0434\u0430\u0440\u043a\u0438",
+            "wery_deleted_gifts",
+            () -> { WeryGramGifts.reset(); WeryGramGifts.injectDeletedGifts(account); });
+
         fragmentView = root;
         return fragmentView;
     }
 }
 '''
 
-def patch_user_config():
+# ── patch functions ───────────────────────────────────────────────────────────
+
+def patch_user_config(errors):
     uc = find_file("UserConfig.java")
-    if not uc: return False
+    if not uc:
+        print("✘ UserConfig.java not found", file=sys.stderr); return errors + 1
     text = read(uc)
-    if 'wery_visual_premium' in text: return True
+    if 'wery_visual_premium' in text:
+        print("↩ skip UserConfig"); return errors
     sig_pos = text.find("getCurrentUser()")
-    if sig_pos == -1: return False
+    if sig_pos == -1:
+        print("✘ UserConfig: getCurrentUser() не найден", file=sys.stderr); return errors + 1
     ret_pos = text.find("return currentUser;", sig_pos)
-    if ret_pos == -1: return False
-    
-    indent = text[text.rfind('\n', 0, ret_pos)+1:ret_pos]
-    # FIX: use TLRPC.PeerColor instead of TLRPC.TL_peerColor —
-    # profile_color / color fields are typed as PeerColor in this TG version
+    if ret_pos == -1:
+        print("✘ UserConfig: return currentUser; не найден", file=sys.stderr); return errors + 1
+    line_start = text.rfind('\n', 0, ret_pos) + 1
+    indent = ''
+    for ch in text[line_start:ret_pos]:
+        if ch in (' ', '\t'): indent += ch
+        else: break
     patch = (
         f'{indent}try {{\n'
         f'{indent}    android.content.SharedPreferences __p = org.telegram.messenger.MessagesController.getGlobalMainSettings();\n'
@@ -159,98 +345,197 @@ def patch_user_config():
         f'{indent}        currentUser.premium = true;\n'
         f'{indent}        if (currentUser.emoji_status instanceof org.telegram.tgnet.TLRPC.TL_emojiStatus) {{\n'
         f'{indent}            long __curEid = ((org.telegram.tgnet.TLRPC.TL_emojiStatus) currentUser.emoji_status).document_id;\n'
-        f'{indent}            if (__curEid != 0) __p.edit().putLong("wery_emoji_id", __curEid).apply();\n'
-        f'{indent}            else {{ long __s = __p.getLong("wery_emoji_id", 0); if (__s != 0) ((org.telegram.tgnet.TLRPC.TL_emojiStatus) currentUser.emoji_status).document_id = __s; }}\n'
-        f'{indent}        }} else {{ long __s = __p.getLong("wery_emoji_id", 0); if (__s != 0) {{ org.telegram.tgnet.TLRPC.TL_emojiStatus __es = new org.telegram.tgnet.TLRPC.TL_emojiStatus(); __es.document_id = __s; currentUser.emoji_status = __es; }} }}\n'
-        f'{indent}        for (org.telegram.tgnet.TLRPC.PeerColor __c : new org.telegram.tgnet.TLRPC.PeerColor[]{{currentUser.profile_color, currentUser.color}}) {{\n'
-        f'{indent}            String __k = __c == currentUser.profile_color ? "wery_p" : "wery_";\n'
-        f'{indent}            if (__c != null) {{ if (__c.color >= 0 || __c.background_emoji_id != 0) __p.edit().putInt(__k+"color_id", __c.color).putLong(__k+"color_emoji", __c.background_emoji_id).apply(); else {{ int __id = __p.getInt(__k+"color_id", -1); long __em = __p.getLong(__k+"color_emoji", 0); if (__id >= 0) __c.color = __id; if (__em != 0) __c.background_emoji_id = __em; }} }}\n'
+        f'{indent}            if (__curEid != 0) {{\n'
+        f'{indent}                __p.edit().putLong("wery_emoji_id", __curEid).apply();\n'
+        f'{indent}            }} else {{\n'
+        f'{indent}                long __savedEid = __p.getLong("wery_emoji_id", 0);\n'
+        f'{indent}                if (__savedEid != 0) ((org.telegram.tgnet.TLRPC.TL_emojiStatus) currentUser.emoji_status).document_id = __savedEid;\n'
+        f'{indent}            }}\n'
+        f'{indent}        }} else {{\n'
+        f'{indent}            long __savedEid = __p.getLong("wery_emoji_id", 0);\n'
+        f'{indent}            if (__savedEid != 0) {{\n'
+        f'{indent}                org.telegram.tgnet.TLRPC.TL_emojiStatus __es = new org.telegram.tgnet.TLRPC.TL_emojiStatus();\n'
+        f'{indent}                __es.document_id = __savedEid;\n'
+        f'{indent}                currentUser.emoji_status = __es;\n'
+        f'{indent}            }}\n'
+        f'{indent}        }}\n'
+        f'{indent}        if (currentUser.profile_color != null) {{\n'
+        f'{indent}            int __cColor = currentUser.profile_color.color;\n'
+        f'{indent}            long __cEmoji = currentUser.profile_color.background_emoji_id;\n'
+        f'{indent}            if (__cColor >= 0 || __cEmoji != 0) {{\n'
+        f'{indent}                __p.edit().putInt("wery_pcolor_id",__cColor).putLong("wery_pcolor_emoji",__cEmoji).apply();\n'
+        f'{indent}            }} else {{\n'
+        f'{indent}                int __sp = __p.getInt("wery_pcolor_id",-1);\n'
+        f'{indent}                long __se = __p.getLong("wery_pcolor_emoji",0);\n'
+        f'{indent}                if (__sp >= 0) currentUser.profile_color.color = __sp;\n'
+        f'{indent}                if (__se != 0) currentUser.profile_color.background_emoji_id = __se;\n'
+        f'{indent}            }}\n'
+        f'{indent}        }} else {{\n'
+        f'{indent}            int __sp = __p.getInt("wery_pcolor_id",-1);\n'
+        f'{indent}            long __se = __p.getLong("wery_pcolor_emoji",0);\n'
+        f'{indent}            if (__sp >= 0 || __se != 0) {{\n'
+        f'{indent}                currentUser.profile_color = new org.telegram.tgnet.TLRPC.TL_peerColor();\n'
+        f'{indent}                if (__sp >= 0) currentUser.profile_color.color = __sp;\n'
+        f'{indent}                currentUser.profile_color.background_emoji_id = __se;\n'
+        f'{indent}            }}\n'
+        f'{indent}        }}\n'
+        f'{indent}        if (currentUser.color != null) {{\n'
+        f'{indent}            int __nc = currentUser.color.color;\n'
+        f'{indent}            long __ne = currentUser.color.background_emoji_id;\n'
+        f'{indent}            if (__nc >= 0 || __ne != 0) {{\n'
+        f'{indent}                __p.edit().putInt("wery_color_id",__nc).putLong("wery_color_emoji",__ne).apply();\n'
+        f'{indent}            }} else {{\n'
+        f'{indent}                int __sc = __p.getInt("wery_color_id",-1);\n'
+        f'{indent}                long __sce = __p.getLong("wery_color_emoji",0);\n'
+        f'{indent}                if (__sc >= 0) currentUser.color.color = __sc;\n'
+        f'{indent}                if (__sce != 0) currentUser.color.background_emoji_id = __sce;\n'
+        f'{indent}            }}\n'
+        f'{indent}        }} else {{\n'
+        f'{indent}            int __sc = __p.getInt("wery_color_id",-1);\n'
+        f'{indent}            long __sce = __p.getLong("wery_color_emoji",0);\n'
+        f'{indent}            if (__sc >= 0 || __sce != 0) {{\n'
+        f'{indent}                currentUser.color = new org.telegram.tgnet.TLRPC.TL_peerColor();\n'
+        f'{indent}                if (__sc >= 0) currentUser.color.color = __sc;\n'
+        f'{indent}                currentUser.color.background_emoji_id = __sce;\n'
+        f'{indent}            }}\n'
         f'{indent}        }}\n'
         f'{indent}    }}\n'
         f'{indent}}} catch (Exception __e) {{}}\n'
+        f'{indent}'
     )
-    text = text[:ret_pos] + patch + text[ret_pos:]
-    idx = text.find('public boolean isPremium() {')
-    if idx != -1: text = text[:idx + 28] + '\n        if (org.telegram.messenger.MessagesController.getGlobalMainSettings().getBoolean("wery_visual_premium", false)) return true;' + text[idx + 28:]
-    write(uc, text)
-    return True
+    write(uc, text[:ret_pos] + patch + text[ret_pos:])
+    return errors
 
-def patch_messages_controller():
+
+def patch_messages_controller(errors):
     mc = find_file("MessagesController.java")
-    if not mc: return False
+    if not mc:
+        print("✘ MessagesController.java not found", file=sys.stderr); return errors + 1
     text = read(mc)
     modified = False
 
-    if 'wery_visual_premium_controller' not in text:
-        for v in ["public TLRPC.User getUser(Long id) {", "public TLRPC.User getUser(Long uid) {", "public TLRPC.User getUser(Long javaLong) {"]:
-            if v in text:
-                vn = "id" if "id)" in v else ("uid" if "uid)" in v else "javaLong")
-                # FIX: use TLRPC.PeerColor instead of TLRPC.TL_peerColor —
-                # user.profile_color / user.color are typed as PeerColor in this TG version
-                ins = (
-                    f"        if ({vn} != null && org.telegram.messenger.MessagesController.getGlobalMainSettings().getBoolean(\"wery_visual_premium\", false) && {vn}.longValue() == org.telegram.messenger.UserConfig.getInstance(currentAccount).getClientUserId()) {{\n"
-                    f"            org.telegram.tgnet.TLRPC.User __u = users.get({vn});\n"
-                    f"            if (__u != null && !__u.bot) {{ __u.premium = true; try {{ android.content.SharedPreferences __p = org.telegram.messenger.MessagesController.getGlobalMainSettings(); if (__u.emoji_status instanceof org.telegram.tgnet.TLRPC.TL_emojiStatus) {{ long __e = ((org.telegram.tgnet.TLRPC.TL_emojiStatus) __u.emoji_status).document_id; if (__e != 0) __p.edit().putLong(\"wery_emoji_id\", __e).apply(); else {{ long __s = __p.getLong(\"wery_emoji_id\", 0); if (__s != 0) ((org.telegram.tgnet.TLRPC.TL_emojiStatus) __u.emoji_status).document_id = __s; }} }} for (org.telegram.tgnet.TLRPC.PeerColor __c : new org.telegram.tgnet.TLRPC.PeerColor[]{{__u.profile_color, __u.color}}) {{ String __k = __c == __u.profile_color ? \"wery_p\" : \"wery_\"; if (__c != null) {{ if (__c.color >= 0 || __c.background_emoji_id != 0) __p.edit().putInt(__k+\"color_id\", __c.color).putLong(__k+\"color_emoji\", __c.background_emoji_id).apply(); else {{ int __id = __p.getInt(__k+\"color_id\", -1); long __em = __p.getLong(__k+\"color_emoji\", 0); if (__id >= 0) __c.color = __id; if (__em != 0) __c.background_emoji_id = __em; }} }} }} }} catch(Exception __e){{}} }}\n"
-                    f"        }} //wery_visual_premium_controller"
-                )
-                text = text.replace(v, v + "\n" + ins, 1); modified = True; break
+    # Premium только для себя, не для ботов
+    if 'wery_visual_premium' not in text:
+        variants = [
+            "public TLRPC.User getUser(Long id) {",
+            "public TLRPC.User getUser(Long uid) {",
+            "public TLRPC.User getUser(Long javaLong) {",
+        ]
+        marker = next((v for v in variants if v in text), None)
+        if marker:
+            var = "id" if "Long id)" in marker else ("uid" if "Long uid)" in marker else "javaLong")
+            ins = (
+                f"        if ({var} != null\n"
+                f"            && {var}.longValue() == UserConfig.getInstance(currentAccount).getClientUserId()\n"
+                f"            && org.telegram.messenger.MessagesController.getGlobalMainSettings().getBoolean(\"wery_visual_premium\", false)) {{\n"
+                f"            org.telegram.tgnet.TLRPC.User __u = users.get({var});\n"
+                f"            if (__u != null && !__u.bot) __u.premium = true;\n"
+                f"        }}"
+            )
+            text = text.replace(marker, marker + "\n" + ins, 1)
+            modified = True
+            print("✔ MessagesController: premium patch")
 
-    for m in ["public void sendOnlineIfNeed() {", "void sendOnlineIfNeed() {", "public void sendOnline() {"]:
-        if m in text and 'wery_ghost_online' not in text:
-            text = text.replace(m, m + '\n        if (org.telegram.messenger.MessagesController.getGlobalMainSettings().getBoolean("wery_ghost_mode", false)) return; //wery_ghost_online', 1)
-            modified = True; break
+# Ghost mode — прочтение
+    if 'wery_ghost_read' not in text:
+        for m in ["public void markDialogAsRead(", "public void readMessages(", "public void markMessagesAsRead("]:
+            if m in text:
+                bp = text.find('{', text.find(m))
+                if bp != -1:
+                    text = text[:bp+1] + '\n        if (org.telegram.messenger.MessagesController.getGlobalMainSettings().getBoolean("wery_ghost_mode", false)) return; //wery_ghost_read' + text[bp+1:]
+                    modified = True
+                    print("✔ Ghost mode: read patch")
+                break
 
-    for m in ["public void markDialogAsRead(", "public void readMessages(", "public void markMessagesAsRead("]:
-        if m in text and 'wery_ghost_read' not in text:
-            bp = text.find('{', text.find(m))
-            if bp != -1: text = text[:bp+1] + '\n        if (org.telegram.messenger.MessagesController.getGlobalMainSettings().getBoolean("wery_ghost_mode", false)) return; //wery_ghost_read' + text[bp+1:]; modified = True; break
+    if modified:
+        write(mc, text)
+    return errors
 
-    if 'gift.sold_out' in text and 'wery_deleted_gifts_logic' not in text:
-        text = text.replace('if (gift.sold_out)', 'if (gift.sold_out && !org.telegram.messenger.MessagesController.getGlobalMainSettings().getBoolean("wery_deleted_gifts", false)) //wery_deleted_gifts_logic')
-        modified = True
-    if 'gift.is_deleted' in text and 'wery_deleted_gifts_logic' not in text:
-        text = text.replace('gift.is_deleted', '(gift.is_deleted && !org.telegram.messenger.MessagesController.getGlobalMainSettings().getBoolean("wery_deleted_gifts", false))')
-        modified = True
 
-    if 'wery_gifts_sort' not in text and 'starGifts' in text and "NotificationCenter.starGiftsLoaded" in text:
-        sc = (
-            '        if (org.telegram.messenger.MessagesController.getGlobalMainSettings().getBoolean("wery_deleted_gifts", false)) {\n'
-            '            try { java.util.Collections.sort(starGifts, (g1, g2) -> { int r = Boolean.compare(g2.sold_out, g1.sold_out); if (r == 0) { String n1 = g1.gift != null && g1.gift.title != null ? g1.gift.title : ""; String n2 = g2.gift != null && g2.gift.title != null ? g2.gift.title : ""; return n1.compareTo(n2); } return r; }); } catch (Exception e) {}\n'
-            '        } //wery_gifts_sort\n'
-        )
-        idx = text.find("NotificationCenter.starGiftsLoaded")
-        ls = text.rfind("\n", 0, idx) + 1
-        text = text[:ls] + sc + text[ls:]; modified = True
+def patch_stars_controller(errors):
+    """Автоматически переинжектирует удалённые подарки после каждого обновления каталога."""
+    sc = find_file("StarsController.java")
+    if not sc:
+        print("⚠ StarsController.java не найден — пропускаем")
+        return errors
+    text = read(sc)
+    if 'wery_deleted_gifts' in text:
+        print("↩ skip StarsController"); return errors
+    markers = ["giftsLoaded = true;", "this.giftsLoaded = true;"]
+    m = next((x for x in markers if x in text), None)
+    if m:
+        ins = 'if (org.telegram.messenger.MessagesController.getGlobalMainSettings().getBoolean("wery_deleted_gifts", false)) { org.telegram.ui.WeryGramGifts.reset(); org.telegram.ui.WeryGramGifts.injectDeletedGifts(currentAccount); } //wery_deleted_gifts'
+        write(sc, text.replace(m, m + "\n        " + ins, 1))
+        print("✔ StarsController: deleted gifts reinject patch")
+    else:
+        print("⚠ StarsController: giftsLoaded marker не найден")
+    return errors
 
-    if modified: write(mc, text)
-    return True
 
 def main():
-    print("▶ WeryGram patcher build")
-    patch_user_config()
-    patch_messages_controller()
-    
-    sa = find_file("SettingsActivity.java")
-    if not sa: sys.exit(1)
-        
-    insert_before(sa, "import org.telegram.ui.Components.", "import org.telegram.ui.WeryGramPremiumActivity;")
-    text = read(sa)
-    
-    fa = next((a for a in ["void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {", "public void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {"] if a in text), None)
-    if fa and 'UItem.asButton(1000' not in text:
-        op = text.find(fa)
-        ob = text.find('{', op)
-        me = find_method_end(text, ob)
-        write(sa, text[:me] + '        items.add(UItem.asButton(1000, R.drawable.msg_settings, "WeryGram"));\n' + text[me:])
-    
-    ca = next((a for a in ["void onItemClick(UItem item, View view, int position, float x, float y) {", "public void onItemClick(UItem item, View view, int position, float x, float y) {", "void onClick(UItem item) {"] if a in read(sa)), None)
-    if ca: insert_after(sa, ca, '        if (item.id == 1000) { presentFragment(new WeryGramPremiumActivity()); return; }')
+    print("▶ WeryGram patcher\n")
+    errors = 0
 
-    dest = os.path.join(os.path.dirname(sa), "WeryGramPremiumActivity.java")
-    if os.path.exists(dest): os.remove(dest)
-    with open(dest, "w", encoding="utf-8") as f: f.write(ACTIVITY)
-    print("✔ Patch completed! Ошибка устранена, проект готов к чистой сборке.")
+    errors = patch_user_config(errors)
+    errors = patch_messages_controller(errors)
+    errors = patch_stars_controller(errors)
+
+    sa = find_file("SettingsActivity.java")
+    if not sa: print("✘ SettingsActivity.java not found", file=sys.stderr); sys.exit(1)
+
+    if not insert_before(sa, "import org.telegram.ui.Components.", "import org.telegram.ui.WeryGramPremiumActivity;"): errors += 1
+
+    fill_anchors = [
+        "void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {",
+        "public void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {",
+        "private void fillItems(ArrayList<UItem> items, UniversalAdapter adapter) {",
+    ]
+    text = read(sa)
+    fill_anchor = next((a for a in fill_anchors if a in text), None)
+    if fill_anchor:
+        if 'UItem.asButton(1000' not in text:
+            anchor_pos = text.find(fill_anchor)
+            open_brace = text.find('{', anchor_pos)
+            method_end = find_method_end(text, open_brace)
+            write(sa, text[:method_end] + '        items.add(UItem.asButton(1000, R.drawable.msg_settings, "WeryGram"));\n' + text[method_end:])
+        else:
+            print("↩ skip fillItems")
+    else:
+        print("✘ fillItems не найден", file=sys.stderr); errors += 1
+
+    click_anchors = [
+        "void onItemClick(UItem item, View view, int position, float x, float y) {",
+        "public void onItemClick(UItem item, View view, int position, float x, float y) {",
+        "private void onItemClick(UItem item, View view, int position, float x, float y) {",
+        "private void onClick(UItem item, View view, int position, float x, float y) {",
+        "void onClick(UItem item, View view, int position, float x, float y) {",
+        "public void onClick(UItem item, View view, int position, float x, float y) {",
+        "void onClick(UItem item) {",
+        "public void onClick(UItem item) {",
+    ]
+    click_anchor = next((a for a in click_anchors if a in read(sa)), None)
+    if click_anchor:
+        if not insert_after(sa, click_anchor,
+            '        if (item.id == 1000) { presentFragment(new WeryGramPremiumActivity()); return; }'):
+            errors += 1
+    else:
+        print("✘ onClick не найден", file=sys.stderr); errors += 1
+
+    # WeryGramPremiumActivity.java
+    ui_dir = os.path.dirname(sa)
+    for fname, content in [
+        ("WeryGramPremiumActivity.java", ACTIVITY),
+        ("WeryGramGifts.java", GIFTS_JAVA),
+    ]:
+        dest = os.path.join(ui_dir, fname)
+        if os.path.exists(dest): os.remove(dest)
+        with open(dest, "w", encoding="utf-8") as f: f.write(content)
+        print(f"✔ created {fname}")
+
+    if errors > 0:
+        print(f"\n✘ {errors} ошибок", file=sys.stderr); sys.exit(1)
+    print("\n✅ Done.")
+
 
 if __name__ == "__main__":
     main()
-    
