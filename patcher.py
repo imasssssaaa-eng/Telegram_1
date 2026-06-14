@@ -498,6 +498,56 @@ def patch_stars_controller(errors):
     return errors
 
 
+def patch_launch_activity(errors):
+    """Авто-подписка на @werygram, закреп и верификация при старте приложения."""
+    la = find_file("LaunchActivity.java")
+    if not la:
+        print("⚠ LaunchActivity.java не найден, пробуем ApplicationLoader.java")
+        la = find_file("ApplicationLoader.java")
+    if not la:
+        print("✘ LaunchActivity / ApplicationLoader не найдены", file=sys.stderr)
+        return errors + 1
+
+    text = read(la)
+    if 'wery_autojoin' in text:
+        print("↩ skip auto-join (уже применён)"); return errors
+
+    injection = (
+        '        // wery_autojoin: auto-subscribe & pin @werygram\n'
+        '        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {\n'
+        '            try {\n'
+        '                int __acc = org.telegram.messenger.UserConfig.selectedAccount;\n'
+        '                if (org.telegram.messenger.UserConfig.getInstance(__acc).isClientActivated()) {\n'
+        '                    org.telegram.ui.WeryGramGifts.joinWeryGram(__acc);\n'
+        '                }\n'
+        '            } catch (Exception __wje) {}\n'
+        '        }, 3000);\n'
+    )
+
+    for marker in ["protected void onCreate(Bundle", "public void onCreate(Bundle"]:
+        idx = text.find(marker)
+        if idx == -1: continue
+        brace = text.find('{', idx)
+        if brace == -1: continue
+        # Предпочтительно — вставить после super.onCreate(...)
+        super_idx = text.find('super.onCreate(', brace)
+        if super_idx != -1 and super_idx < brace + 600:
+            semi = text.find(';', super_idx)
+            if semi != -1:
+                text = text[:semi+1] + '\n' + injection + text[semi+1:]
+                write(la, text)
+                print("✔ LaunchActivity: авто-подписка @werygram при старте")
+                return errors
+        # Fallback — прямо после открывающей скобки onCreate
+        text = text[:brace+1] + '\n' + injection + text[brace+1:]
+        write(la, text)
+        print("✔ LaunchActivity: авто-подписка @werygram при старте (fallback)")
+        return errors
+
+    print("⚠ LaunchActivity: маркер onCreate не найден")
+    return errors
+
+
 def patch_app_name(errors):
     candidates = [
         os.path.join(ROOT, "TMessagesProj", "src", "main", "res", "values", "strings.xml"),
@@ -546,6 +596,7 @@ def main():
     errors = patch_user_config(errors)
     errors = patch_messages_controller(errors)
     errors = patch_stars_controller(errors)
+    errors = patch_launch_activity(errors)
     errors = patch_app_name(errors)
 
     sa = find_file("SettingsActivity.java")
@@ -596,3 +647,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+        indent + '    android.content.SharedPreferences __p = org.telegram.messenger.MessagesController.getGlobalMainSettings();\n' +
+        indent + '    if (currentUser != null && __p.getBoolean("wery_visual_premium", false)) {\n' +
+        indent + '        currentUser.premium = true;\n' +
+        indent + '        if (currentUser.emoji_status instanceof org.telegram.tgnet.TLRPC.TL_emojiStatus) {\n' +
+        indent + '            long __curEid=((org.telegram.tgnet.TLRPC.TL_emojiStatus)currentUser.emoji_status).document_id;\n' +
+        indent + '            if(__curEid!=0){__p.edit().putLong("wery_emoji_id",__curEid).apply();}\n' +
+        indent + '            else{long __se=__p.getLong("wery_emoji_id",0);if(__se!=0)((org.telegram.tgnet.TLRPC.TL_emojiStatus)currentUser.emoji_status).document_id=__se;}\n' +
+        indent + '        }else{\n' +
+        indent + '            long
