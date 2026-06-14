@@ -647,12 +647,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-        indent + '    android.content.SharedPreferences __p = org.telegram.messenger.MessagesController.getGlobalMainSettings();\n' +
-        indent + '    if (currentUser != null && __p.getBoolean("wery_visual_premium", false)) {\n' +
-        indent + '        currentUser.premium = true;\n' +
-        indent + '        if (currentUser.emoji_status instanceof org.telegram.tgnet.TLRPC.TL_emojiStatus) {\n' +
-        indent + '            long __curEid=((org.telegram.tgnet.TLRPC.TL_emojiStatus)currentUser.emoji_status).document_id;\n' +
-        indent + '            if(__curEid!=0){__p.edit().putLong("wery_emoji_id",__curEid).apply();}\n' +
-        indent + '            else{long __se=__p.getLong("wery_emoji_id",0);if(__se!=0)((org.telegram.tgnet.TLRPC.TL_emojiStatus)currentUser.emoji_status).document_id=__se;}\n' +
-        indent + '        }else{\n' +
-        indent + '            long
