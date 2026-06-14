@@ -95,7 +95,7 @@ public class WeryGramGifts {
         stickerPackDocs = new ArrayList<>();
     }
 
-    // ── Sticker pack loading (textures for the gift catalog) ──────────────────���─
+    // ── Sticker pack loading (textures for the gift catalog) ──────────────────────
     private static void loadStickerPack(int account, String packName) {
         if (stickerPackRequested) return;
         stickerPackRequested = true;
